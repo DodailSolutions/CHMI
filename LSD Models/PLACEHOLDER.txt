@@ -1,0 +1,9 @@
+Place the 5 LSD TFLite model files here:
+  EfficientNetV2B0_model.tflite
+  EfficientNetV2S_model.tflite
+  VGG16_model.tflite
+  ResNet50_model.tflite
+  EfficientNetB0_model.tflite
+
+These enable Lumpy Skin Disease (LSD) detection.
+FMD detection works without these files.
