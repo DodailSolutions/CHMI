@@ -1,0 +1,37 @@
+# ─── Secrets (NEVER commit) ──────────────────────────────────
+.streamlit/secrets.toml
+
+# ─── Python ──────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ─── Data / uploads (potentially large / private) ────────────
+uploaded_images/
+image_metadata/
+
+# ─── OS artefacts ────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Logs ────────────────────────────────────────────────────
+*.log
+streamlit_log.txt
+
+# ─── IDE ─────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+
+# ─── Archives ────────────────────────────────────────────────
+*.zip
+*.tar.gz

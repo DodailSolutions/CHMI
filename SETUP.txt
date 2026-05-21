@@ -1,0 +1,66 @@
+═══════════════════════════════════════════════════════
+ CHMI — Cattle Health Monitor  |  Setup Guide
+═══════════════════════════════════════════════════════
+
+REQUIREMENTS
+  • Python 3.9 or 3.10
+  • pip
+
+─────────────────────────────────────────────────────
+ macOS / Linux
+─────────────────────────────────────────────────────
+  1.  Open a terminal in this folder.
+
+  2.  Run:
+        bash scripts/run.sh
+
+      This script will:
+        - Create a .venv virtual environment
+        - Install all dependencies from requirements.txt
+        - Copy .streamlit/secrets.toml.example → secrets.toml
+        - Run healthcheck.py to verify models & imports
+        - Start the app on http://localhost:8501
+
+  3.  Fill in your SMS credentials:
+        .streamlit/secrets.toml
+        → SMS_AUTH_KEY   = "your_key"
+        → SMS_AUTH_TOKEN = "your_token"
+      (Get credentials at https://www.smscountry.com/)
+
+─────────────────────────────────────────────────────
+ Windows
+─────────────────────────────────────────────────────
+  1.  Open Command Prompt in this folder.
+
+  2.  Run:
+        commands.bat
+
+      Same steps as above — auto-creates .venv, installs deps,
+      runs healthcheck, launches on http://localhost:8501.
+
+  3.  Fill in .streamlit\secrets.toml (same as above).
+
+─────────────────────────────────────────────────────
+ LSD Detection (optional)
+─────────────────────────────────────────────────────
+  If you have LSD model files, place them here:
+    LSD Models/
+      EfficientNetV2B0_model.tflite
+      EfficientNetV2S_model.tflite
+      VGG16_model.tflite
+      ResNet50_model.tflite
+      EfficientNetB0_model.tflite
+
+  Also add sample images to:
+    LSD Images/1.jpg, 2.jpg, 3.jpg
+
+─────────────────────────────────────────────────────
+ Verify setup
+─────────────────────────────────────────────────────
+  python healthcheck.py
+
+  All items should show OK. Missing LSD Models
+  will appear as MISSING but the app will still
+  run FMD detection.
+
+═══════════════════════════════════════════════════════
