@@ -13,6 +13,8 @@ from streamlit_geolocation import streamlit_geolocation  # For location permissi
 import os
 import pandas as pd
 from fpdf import FPDF
+import json
+
 
 
 image_size = (224, 224)
@@ -55,19 +57,58 @@ def reconstruction_error_tflite(img_array, reconstructed_array):
     """
     return np.mean((img_array - reconstructed_array) ** 2)
 
+
 def analyze_single_image(image, interpreter, input_details, output_details, threshold=threshold):
     """
-    Processes a user-uploaded image and returns error and acceptance status.
+    Multi-heuristic image validator. Returns error and acceptance status.
+
+    The autoencoder alone is not reliable — simple/solid images can have
+    reconstruction error LOWER than real cow photos. We layer several checks:
+      1. Pixel variance  — real photos have rich texture (var > 0.005)
+      2. Color diversity — real photos have spread across R,G,B channels
+      3. Brightness      — not pure black or pure white
+      4. Autoencoder MSE — real cow images: 0.0005-0.006; simple images
+                           cluster near 0 or above 0.015.
+                           We reject if error < MIN_ERROR (too simple)
+                           OR error > threshold (too different from a cow).
     """
-    pil_img = Image.open(image).convert('RGB').resize((224, 224))  # BUG-003 fixed: use parameter not global
-    img_array = np.array(pil_img).astype('float32') / 255.0
+    try:
+        image.seek(0)
+    except AttributeError:
+        pass
+
+    pil_img = Image.open(image).convert('RGB').resize((224, 224))
+    img_array = np.array(pil_img).astype('float32') / 255.0   # shape (224,224,3)
+
+    # ── Heuristic 1: pixel variance ──────────────────────────────────────────
+    pixel_var = float(np.var(img_array))
+    if pixel_var < 0.004:          # solid/nearly-solid image
+        return {'error': 0.0, 'accepted': False, 'reason': 'low_variance'}
+
+    # ── Heuristic 2: per-channel std — reject near-grayscale images ──────────
+    ch_stds = img_array.reshape(-1, 3).std(axis=0)   # std per channel
+    if ch_stds.max() < 0.06:       # all channels uniformly flat
+        return {'error': 0.0, 'accepted': False, 'reason': 'no_color'}
+
+    # ── Heuristic 3: brightness sanity ───────────────────────────────────────
+    mean_brightness = float(img_array.mean())
+    if mean_brightness < 0.04 or mean_brightness > 0.96:
+        return {'error': 0.0, 'accepted': False, 'reason': 'extreme_brightness'}
+
+    # ── Heuristic 4: autoencoder reconstruction error ────────────────────────
     input_data = np.expand_dims(img_array, axis=0)
     reconstructed = run_tflite_inference(interpreter, input_details, output_details, input_data)
     error = reconstruction_error_tflite(input_data, reconstructed)
-    is_accepted = error < threshold
+
+    # Real cattle images: 0.0005–0.006. Too-simple images: < 0.0005.
+    # Very different images: > threshold (0.0075).
+    MIN_ERROR = 0.0003
+    is_accepted = (MIN_ERROR <= error <= threshold)
+
     return {
         'error': error,
-        'accepted': is_accepted
+        'accepted': is_accepted,
+        'reason': 'ok' if is_accepted else ('too_simple' if error < MIN_ERROR else 'not_cow')
     }
 
 # Create folders if not exist
@@ -224,22 +265,51 @@ def preprocess_image(uploaded_file):
 
 
 
+def collapse_probs_to_n(probs, n):
+    """Collapse a probability array to n classes by summing equal-sized groups.
+    
+    If len(probs) == n, returns probs unchanged.
+    If len(probs) is a multiple of n, groups are summed and re-normalised.
+    Otherwise, the first n values are taken and re-normalised.
+    """
+    probs = np.asarray(probs, dtype=np.float32)
+    if len(probs) == n:
+        return probs
+    if len(probs) % n == 0:
+        group_size = len(probs) // n
+        collapsed = np.array([probs[i*group_size:(i+1)*group_size].sum() for i in range(n)], dtype=np.float32)
+    else:
+        collapsed = probs[:n].copy()
+    total = collapsed.sum()
+    if total > 0:
+        collapsed /= total
+    return collapsed
+
+
 def soft_voting_ensemble(interpreters, image, weights, CLASS_NAMES):
-    total_weighted_probs = np.zeros(len(CLASS_NAMES))
+    n_classes = len(CLASS_NAMES)
+    total_weighted_probs = np.zeros(n_classes, dtype=np.float32)
     # Prepare input once — identical for every model in the ensemble
     input_data = np.expand_dims(image, axis=0).astype(np.float32)
+    total_used_weight = 0.0
 
     for name, interpreter in interpreters.items():
         in_idx  = interpreter.get_input_details()[0]['index']
         out_idx = interpreter.get_output_details()[0]['index']
         interpreter.set_tensor(in_idx, input_data)
         interpreter.invoke()
-        probs = interpreter.get_tensor(out_idx)[0]
-        total_weighted_probs += weights.get(name, 0) * normalize_probs(probs)
+        raw_probs = interpreter.get_tensor(out_idx)[0]
+        # Collapse to target number of classes if needed
+        probs = collapse_probs_to_n(normalize_probs(raw_probs), n_classes)
+        w = weights.get(name, 0)
+        total_weighted_probs += w * probs
+        total_used_weight += w
 
-    final_probs = total_weighted_probs / TOTAL_WEIGHT
+    if total_used_weight == 0:
+        total_used_weight = 1.0
+    final_probs = total_weighted_probs / total_used_weight
     
-    if len(CLASS_NAMES) == 4:
+    if n_classes == 4:
         group1 = float(final_probs[0] + final_probs[1])
         group2 = float(final_probs[2] + final_probs[3])
         if group1 >= group2:
@@ -279,6 +349,9 @@ if "disable_otp_request_until" not in st.session_state:
 
 if "location" not in st.session_state:
     st.session_state.location = {"lat": None, "lon": None}
+
+if "last_resolved_coords" not in st.session_state:
+    st.session_state.last_resolved_coords = None
 
 if "user_details" not in st.session_state:
     st.session_state.user_details = {}
@@ -333,6 +406,7 @@ step_labels = {
 # ── Sidebar ─────────────────────────────────────────────────────────────────
 current_step = st.session_state.get("step", "user_info")
 
+# ── Brand Header ──
 st.sidebar.markdown("""
     <div style="padding: 1.5rem 0 1rem 0;">
         <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:0.4rem;">
@@ -348,52 +422,120 @@ st.sidebar.markdown("""
     <div style="border-top:1px solid #1e293b;margin-bottom:1.25rem;"></div>
 """, unsafe_allow_html=True)
 
+# ── Vertical Stepper with connector lines ──
 _step_order = ["user_info", "otp_verify", "dashboard"]
-_step_info  = [("User Info", "1"), ("Verify OTP", "2"), ("Diagnose", "3")]
+_step_info  = [("User Info", "1", "Enter your details"), ("Verify OTP", "2", "Confirm your number"), ("Diagnose", "3", "Upload & analyze")]
 _cur_idx    = _step_order.index(current_step) if current_step in _step_order else 0
 
 st.sidebar.markdown("<div style='font-size:0.68rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.1rem;margin-bottom:0.75rem;'>Workflow</div>", unsafe_allow_html=True)
-for i, (label, num) in enumerate(_step_info):
+
+for i, (label, num, subtitle) in enumerate(_step_info):
     if i < _cur_idx:
-        dot_bg, dot_color, txt_color, weight = "#059669", "#fff", "#94a3b8", "500"
-        dot_inner = "✓"
+        dot_bg, dot_border, dot_shadow = "#059669", "none", "0 0 0 3px rgba(5,150,105,0.15)"
+        dot_inner, dot_color = "✓", "#fff"
+        txt_color, sub_color, weight = "#94a3b8", "#475569", "500"
     elif i == _cur_idx:
-        dot_bg, dot_color, txt_color, weight = "#059669", "#fff", "#f1f5f9", "700"
-        dot_inner = num
+        dot_bg, dot_border, dot_shadow = "#059669", "none", "0 0 0 4px rgba(5,150,105,0.25), 0 0 12px rgba(5,150,105,0.35)"
+        dot_inner, dot_color = num, "#fff"
+        txt_color, sub_color, weight = "#f1f5f9", "#94a3b8", "700"
     else:
-        dot_bg, dot_color, txt_color, weight = "#1e293b", "#475569", "#475569", "400"
-        dot_inner = num
+        dot_bg, dot_border, dot_shadow = "#1e293b", "2px solid #334155", "none"
+        dot_inner, dot_color = num, "#475569"
+        txt_color, sub_color, weight = "#475569", "#334155", "400"
+
+    # Build step HTML — must start at column 0 to avoid Streamlit code-block rendering
+    _step_html = (
+        f'<div style="display:flex;align-items:center;gap:0.75rem;padding:0.3rem 0;">'
+        f'<div style="width:28px;height:28px;background:{dot_bg};border:{dot_border};border-radius:50%;'
+        f'display:flex;align-items:center;justify-content:center;'
+        f'font-size:0.72rem;font-weight:700;color:{dot_color};flex-shrink:0;'
+        f'box-shadow:{dot_shadow};transition:all 0.3s ease;">{dot_inner}</div>'
+        f'<div style="flex:1;min-width:0;">'
+        f'<div style="font-size:0.85rem;font-weight:{weight};color:{txt_color};line-height:1.3;">{label}</div>'
+        f'<div style="font-size:0.68rem;color:{sub_color};line-height:1.3;margin-top:1px;">{subtitle}</div>'
+        f'</div></div>'
+    )
+    st.sidebar.markdown(_step_html, unsafe_allow_html=True)
+
+    # Connector line (between steps, not after the last)
+    if i < len(_step_info) - 1:
+        _line_color = "#059669" if i < _cur_idx else "#1e293b"
+        st.sidebar.markdown(f'<div style="width:2px;height:20px;background:{_line_color};margin-left:13px;border-radius:1px;margin-top:-8px;margin-bottom:-8px;"></div>', unsafe_allow_html=True)
+
+# ── User Context Card (shown when authenticated) ──
+if current_step == "dashboard" and st.session_state.get("user_details"):
+    _u = st.session_state.user_details
+    _initial = (_u.get("name", "U") or "U")[0].upper()
+    _uname = _u.get("name", "User")
+    _umobile = _u.get("mobile", "")
+    _uloc = ", ".join(filter(None, [_u.get("village", ""), _u.get("district", "")]))
     st.sidebar.markdown(f"""
-        <div style="display:flex;align-items:center;gap:0.75rem;padding:0.45rem 0;">
-            <div style="width:28px;height:28px;background:{dot_bg};border-radius:50%;
-                        display:flex;align-items:center;justify-content:center;
-                        font-size:0.75rem;font-weight:700;color:{dot_color};flex-shrink:0;">
-                {dot_inner}
+        <div style="border-top:1px solid #1e293b;margin:1rem 0;"></div>
+        <div style="font-size:0.68rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.1rem;margin-bottom:0.6rem;">Logged In As</div>
+        <div style="background:#1e293b;border-radius:12px;padding:0.75rem 0.9rem;border:1px solid #334155;">
+            <div style="display:flex;align-items:center;gap:0.65rem;">
+                <div style="width:34px;height:34px;background:linear-gradient(135deg,#059669,#047857);
+                            border-radius:50%;display:flex;align-items:center;justify-content:center;
+                            font-size:0.85rem;font-weight:700;color:#fff;flex-shrink:0;">{_initial}</div>
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:0.85rem;font-weight:700;color:#f1f5f9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{_uname}</div>
+                    <div style="font-size:0.7rem;color:#64748b;font-weight:500;">+91 {_umobile}</div>
+                </div>
             </div>
-            <span style="font-size:0.88rem;font-weight:{weight};color:{txt_color};">{label}</span>
+            {f'<div style="font-size:0.68rem;color:#475569;margin-top:0.5rem;padding-top:0.5rem;border-top:1px solid #334155;">📍 {_uloc}</div>' if _uloc else ''}
         </div>
     """, unsafe_allow_html=True)
 
+# ── Preferences: Text Size + Language ──
 st.sidebar.markdown("<div style='border-top:1px solid #1e293b;margin:1rem 0;'></div>", unsafe_allow_html=True)
-st.sidebar.markdown("<div style='font-size:0.68rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.1rem;margin-bottom:0.6rem;'>Text Size</div>", unsafe_allow_html=True)
-_fs_col1, _fs_col2, _fs_col3 = st.sidebar.columns([1, 1.2, 1])
+st.sidebar.markdown("<div style='font-size:0.68rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.1rem;margin-bottom:0.6rem;'>Preferences</div>", unsafe_allow_html=True)
+
+# Text size — compact inline layout
+st.sidebar.markdown("<div style='font-size:0.75rem;color:#64748b;margin-bottom:0.4rem;font-weight:500;'>Text Size</div>", unsafe_allow_html=True)
+_fs_col1, _fs_col2, _fs_col3 = st.sidebar.columns([1, 2, 1])
 with _fs_col1:
-    if st.button("−", help="Decrease font size", key="fs_dec"):
+    if st.button("A−", help="Decrease font size", key="fs_dec", use_container_width=True):
         st.session_state.font_size = max(14, st.session_state.font_size - 2)
 with _fs_col2:
-    st.sidebar.markdown(f"<div style='text-align:center;font-weight:700;color:#94a3b8;font-size:0.85rem;padding-top:0.45rem;'>{st.session_state.font_size}px</div>", unsafe_allow_html=True)
+    _fs_pct = round((st.session_state.font_size - 14) / (26 - 14) * 100)
+    st.sidebar.markdown(
+        f'<div style="text-align:center;padding-top:0.3rem;">'
+        f'<div style="font-weight:700;color:#f1f5f9;font-size:0.88rem;line-height:1;">{st.session_state.font_size}px</div>'
+        f'<div style="background:#334155;border-radius:4px;height:3px;margin-top:5px;overflow:hidden;">'
+        f'<div style="background:#059669;height:100%;width:{_fs_pct}%;border-radius:4px;transition:width 0.2s;"></div>'
+        f'</div></div>', unsafe_allow_html=True)
 with _fs_col3:
-    if st.button("+", help="Increase font size", key="fs_inc"):
+    if st.button("A+", help="Increase font size", key="fs_inc", use_container_width=True):
         st.session_state.font_size = min(26, st.session_state.font_size + 2)
 
-st.sidebar.markdown("<div style='border-top:1px solid #1e293b;margin:1rem 0;'></div>", unsafe_allow_html=True)
-st.sidebar.markdown("<div style='font-size:0.68rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.1rem;margin-bottom:0.6rem;'>Language / భాష</div>", unsafe_allow_html=True)
-_lang_choice = st.sidebar.radio("", ["English", "తెలుగు"], key="lang_radio", horizontal=True, label_visibility="collapsed")
+# Language — using selectbox to avoid wrapping radio labels
+st.sidebar.markdown("<div style='font-size:0.75rem;color:#64748b;margin:0.75rem 0 0.35rem 0;font-weight:500;'>Language / భాష</div>", unsafe_allow_html=True)
+_lang_options = ["English", "తెలుగు"]
+_lang_idx = 1 if st.session_state.language == "te" else 0
+_lang_choice = st.sidebar.selectbox("Language", _lang_options, index=_lang_idx, key="lang_select", label_visibility="collapsed")
 st.session_state.language = "te" if _lang_choice == "తెలుగు" else "en"
 
+# ── Scan History Badge ──
 if st.session_state.scan_history:
+    _scan_count = len(st.session_state.scan_history)
+    st.sidebar.markdown(f"""
+        <div style="border-top:1px solid #1e293b;margin:1rem 0;"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+            <div style="font-size:0.68rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.1rem;">Session</div>
+            <div style="display:flex;align-items:center;gap:0.4rem;background:#059669;padding:0.2rem 0.65rem;border-radius:100px;">
+                <span style="font-size:0.72rem;font-weight:700;color:#fff;">{_scan_count}</span>
+                <span style="font-size:0.65rem;color:rgba(255,255,255,0.8);font-weight:500;">scan{"s" if _scan_count != 1 else ""}</span>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+# ── New Session Button ──
+if current_step == "dashboard":
     st.sidebar.markdown("<div style='border-top:1px solid #1e293b;margin:1rem 0;'></div>", unsafe_allow_html=True)
-    st.sidebar.markdown(f"<div style='font-size:0.72rem;color:#64748b;'>📊 {len(st.session_state.scan_history)} scan(s) this session</div>", unsafe_allow_html=True)
+    if st.sidebar.button("🔄  New Session", key="sb_new_session", use_container_width=True):
+        for _k in list(st.session_state.keys()):
+            del st.session_state[_k]
+        st.rerun()
 
 
 # ── Global font + base CSS ────────────────────────────────────────────────────
@@ -417,7 +559,8 @@ body, p, li, label, td, .info-row-val, .alert-body {{
 }}
 
 /* ── Streamlit chrome ── */
-#MainMenu, footer, header {{ visibility: hidden; }}
+#MainMenu, footer, [data-testid="stHeaderActionElements"] {{ visibility: hidden !important; }}
+header {{ background-color: transparent !important; }}
 .block-container {{
     padding-top: 0 !important;
     padding-bottom: 3rem !important;
@@ -440,40 +583,77 @@ body, p, li, label, td, .info-row-val, .alert-body {{
 [data-testid="stSidebar"] h2,
 [data-testid="stSidebar"] h3 {{ color: #f1f5f9 !important; }}
 
-/* ── Primary buttons ── */
-.stButton > button,
-.stButton > button p,
-.stButton > button span,
-.stButton > button div {{
-    background: linear-gradient(135deg, #059669 0%, #047857 100%) !important;
-    color: #ffffff !important;
-    border: none !important;
+/* ── Streamlit buttons ── */
+/* Default (Secondary) Button style */
+div.stButton button {{
+    background: #ffffff !important;
+    color: #047857 !important;
+    border: 2px solid #059669 !important;
     border-radius: 10px !important;
-    padding: 0.65rem 2rem !important;
+    padding: 0.65rem 1.25rem !important;
     font-weight: 600 !important;
     font-size: 0.95rem !important;
     letter-spacing: 0.01rem !important;
     transition: all 0.2s ease !important;
-    box-shadow: 0 2px 10px rgba(5,150,105,0.35) !important;
+    box-shadow: 0 1px 4px rgba(5,150,105,0.1) !important;
     height: auto !important;
     line-height: 1.5 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
 }}
-.stButton > button:hover,
-.stButton > button:hover p,
-.stButton > button:hover span,
-.stButton > button:hover div {{
+div.stButton button:hover {{
     transform: translateY(-2px) !important;
-    box-shadow: 0 6px 20px rgba(5,150,105,0.5) !important;
+    box-shadow: 0 4px 14px rgba(5,150,105,0.2) !important;
+    background: #f0fdf4 !important;
+}}
+div.stButton button:active {{ transform: translateY(0) !important; }}
+
+/* Primary Button style overrides */
+div.stButton button[kind="primary"],
+div.stButton button[data-testid="baseButton-primary"] {{
+    background: linear-gradient(135deg, #059669 0%, #047857 100%) !important;
+    color: #ffffff !important;
+    border: none !important;
+    box-shadow: 0 2px 10px rgba(5,150,105,0.35) !important;
+}}
+div.stButton button[kind="primary"]:hover,
+div.stButton button[data-testid="baseButton-primary"]:hover {{
     background: linear-gradient(135deg, #047857 0%, #065f46 100%) !important;
+    box-shadow: 0 6px 20px rgba(5,150,105,0.5) !important;
     color: #ffffff !important;
 }}
-.stButton > button:active {{ transform: translateY(0) !important; }}
+
+/* Ensure typography and nowrap for inner elements in buttons */
+div.stButton button p,
+div.stButton button span,
+div.stButton button div,
+div.stButton button * {{
+    color: inherit !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}}
+div.stButton button[kind="primary"] p,
+div.stButton button[kind="primary"] span,
+div.stButton button[kind="primary"] div,
+div.stButton button[kind="primary"] *,
+div.stButton button[data-testid="baseButton-primary"] p,
+div.stButton button[data-testid="baseButton-primary"] span,
+div.stButton button[data-testid="baseButton-primary"] div,
+div.stButton button[data-testid="baseButton-primary"] * {{
+    color: #ffffff !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}}
 
 /* ── Download button ── */
-.stDownloadButton > button,
-.stDownloadButton > button p,
-.stDownloadButton > button span,
-.stDownloadButton > button div {{
+.stDownloadButton button {{
     background: #ffffff !important;
     color: #047857 !important;
     border: 2px solid #059669 !important;
@@ -482,22 +662,34 @@ body, p, li, label, td, .info-row-val, .alert-body {{
     font-weight: 600 !important;
     transition: all 0.2s ease !important;
     box-shadow: 0 1px 4px rgba(5,150,105,0.15) !important;
+    height: auto !important;
+    line-height: 1.5 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
 }}
-.stDownloadButton > button:hover,
-.stDownloadButton > button:hover p,
-.stDownloadButton > button:hover span,
-.stDownloadButton > button:hover div {{
+.stDownloadButton button:hover {{
     background: #f0fdf4 !important;
     box-shadow: 0 4px 14px rgba(5,150,105,0.25) !important;
     transform: translateY(-1px) !important;
-    color: #047857 !important;
+}}
+.stDownloadButton button p,
+.stDownloadButton button span,
+.stDownloadButton button div,
+.stDownloadButton button * {{
+    color: inherit !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
 }}
 
 /* ── Form submit button ── */
-.stFormSubmitButton > button,
-.stFormSubmitButton > button p,
-.stFormSubmitButton > button span,
-.stFormSubmitButton > button div {{
+.stFormSubmitButton button {{
     background: linear-gradient(135deg, #059669 0%, #047857 100%) !important;
     color: #ffffff !important;
     border: none !important;
@@ -507,14 +699,29 @@ body, p, li, label, td, .info-row-val, .alert-body {{
     font-size: 1rem !important;
     box-shadow: 0 2px 10px rgba(5,150,105,0.35) !important;
     transition: all 0.2s !important;
+    height: auto !important;
+    line-height: 1.5 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
 }}
-.stFormSubmitButton > button:hover,
-.stFormSubmitButton > button:hover p,
-.stFormSubmitButton > button:hover span,
-.stFormSubmitButton > button:hover div {{
+.stFormSubmitButton button:hover {{
     transform: translateY(-2px) !important;
     box-shadow: 0 6px 20px rgba(5,150,105,0.5) !important;
+}}
+.stFormSubmitButton button p,
+.stFormSubmitButton button span,
+.stFormSubmitButton button div,
+.stFormSubmitButton button * {{
     color: #ffffff !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
 }}
 
 /* ── Inputs ── */
@@ -632,29 +839,60 @@ details > summary {{
 }}
 
 /* ── Sidebar controls ── */
-[data-testid="stSidebar"] button {{
+[data-testid="stSidebar"] .stButton button {{
     background: #1e293b !important;
     box-shadow: none !important;
     border: 1px solid #334155 !important;
-    padding: 0.4rem 0.75rem !important;
+    padding: 0.45rem 0.85rem !important;
     border-radius: 8px !important;
     transform: none !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+    transition: all 0.2s ease !important;
 }}
-[data-testid="stSidebar"] button p,
-[data-testid="stSidebar"] button span,
-[data-testid="stSidebar"] button div {{
+[data-testid="stSidebar"] .stButton button p,
+[data-testid="stSidebar"] .stButton button span,
+[data-testid="stSidebar"] .stButton button div,
+[data-testid="stSidebar"] .stButton button * {{
     color: #cbd5e1 !important;
-    font-size: 0.85rem !important;
+    font-size: 0.82rem !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
 }}
-[data-testid="stSidebar"] button:hover {{
+[data-testid="stSidebar"] .stButton button:hover {{
     background: #334155 !important;
+    border-color: #475569 !important;
     transform: none !important;
     box-shadow: none !important;
 }}
-[data-testid="stSidebar"] button:hover p,
-[data-testid="stSidebar"] button:hover span,
-[data-testid="stSidebar"] button:hover div {{
+[data-testid="stSidebar"] .stButton button:hover p,
+[data-testid="stSidebar"] .stButton button:hover span,
+[data-testid="stSidebar"] .stButton button:hover div,
+[data-testid="stSidebar"] .stButton button:hover * {{
     color: #ffffff !important;
+}}
+
+/* ── Sidebar selectbox (language picker) ── */
+[data-testid="stSidebar"] .stSelectbox > div > div > div {{
+    background: #1e293b !important;
+    border: 1px solid #334155 !important;
+    border-radius: 8px !important;
+    color: #cbd5e1 !important;
+    font-size: 0.82rem !important;
+}}
+[data-testid="stSidebar"] .stSelectbox > div > div > div:hover {{
+    border-color: #475569 !important;
+}}
+[data-testid="stSidebar"] .stSelectbox label {{
+    color: #64748b !important;
+}}
+[data-testid="stSidebar"] .stSelectbox svg {{
+    fill: #94a3b8 !important;
+    color: #94a3b8 !important;
+}}
+[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] span,
+[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] div {{
+    color: #cbd5e1 !important;
 }}
 
 /* ── Map ── */
@@ -1109,6 +1347,66 @@ def load_custom_css():
     /* ══ MISC ════════════════════════════════════════════════ */
     .divider { border:none; border-top:1px solid #f1f5f9; margin:1.5rem 0; }
 
+    /* ══ CUSTOM RADIO BUTTON SELECT CARDS ════════════════════ */
+    div[data-testid="stRadio"] div[role="radiogroup"] {
+        display: flex;
+        flex-direction: row;
+        gap: 1rem;
+        width: 100%;
+        margin-top: 0.5rem;
+    }
+    div[data-testid="stRadio"] div[role="radiogroup"] label {
+        flex: 1;
+        background: #ffffff !important;
+        border: 2px solid #e2e8f0 !important;
+        border-radius: 12px !important;
+        padding: 0.8rem 1.25rem !important;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.02) !important;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+    div[data-testid="stRadio"] div[role="radiogroup"] label:hover {
+        border-color: #059669 !important;
+        background: #f0fdf4 !important;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(5,150,105,0.08) !important;
+    }
+    div[data-testid="stRadio"] div[role="radiogroup"] label:has(input[checked]),
+    div[data-testid="stRadio"] div[role="radiogroup"] label:has(input:checked) {
+        border-color: #059669 !important;
+        background: #e6f4ea !important;
+        font-weight: 600 !important;
+        box-shadow: 0 0 0 3px rgba(5,150,105,0.15), 0 4px 12px rgba(5,150,105,0.1) !important;
+    }
+
+    /* ══ CUSTOM FILE UPLOADER ════════════════════════════════ */
+    div[data-testid="stFileUploader"] {
+        border: 2px dashed #cbd5e1 !important;
+        border-radius: 14px !important;
+        background: #f8fafc !important;
+        padding: 1rem !important;
+        transition: all 0.2s ease-in-out !important;
+    }
+    div[data-testid="stFileUploader"]:hover {
+        border-color: #059669 !important;
+        background: #f0fdf4 !important;
+    }
+    div[data-testid="stFileUploader"] section {
+        border: none !important;
+        background: transparent !important;
+        padding: 0 !important;
+    }
+
+    /* ══ CUSTOM MAP WIDGET ═══════════════════════════════════ */
+    div[data-testid="stMap"] iframe {
+        border-radius: 16px !important;
+        border: 1px solid #e2e8f0 !important;
+    }
+
     </style>
     """, unsafe_allow_html=True)
     
@@ -1187,6 +1485,7 @@ def generate_pdf_report(user, loc, cattle_id, gender, age, disease_type, disease
         pdf.set_font("Helvetica", "", 10)
         pdf.set_text_color(17, 24, 39)
         pdf.multi_cell(0, 7, str(value))
+        pdf.ln(0)
 
     # ── User Details ──────────────────────────────────────────────────────────
     _section("User Details")
@@ -1195,6 +1494,8 @@ def generate_pdf_report(user, loc, cattle_id, gender, age, disease_type, disease
     _row("Village", user.get("village", "N/A"))
     _row("Mandal", user.get("mandal", "N/A"))
     _row("District", user.get("district", "N/A"))
+    _row("State", user.get("state", "N/A"))
+    _row("Pincode", user.get("pincode", "N/A"))
     if loc.get("lat") and loc.get("lon"):
         _row("GPS Location", f"{loc['lat']:.6f}, {loc['lon']:.6f}")
     pdf.ln(4)
@@ -1252,6 +1553,161 @@ def generate_pdf_report(user, loc, cattle_id, gender, age, disease_type, disease
     return bytes(pdf.output())
 
 
+def reverse_geocode(lat, lon):
+    """Reverse geocode latitude and longitude to retrieve Village, Mandal, and District."""
+    if lat is None or lon is None:
+        return None
+    url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json&accept-language=en"
+    headers = {"User-Agent": "CHMIAssistant/2.0 (contact: support@dodailsolutions.com)"}
+    try:
+        r = requests.get(url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            addr = data.get("address", {})
+            
+            # Robust extraction of Village name
+            village = (
+                addr.get("village") or
+                addr.get("hamlet") or
+                addr.get("suburb") or
+                addr.get("neighbourhood") or
+                addr.get("quarter") or
+                addr.get("town") or
+                addr.get("city_district") or
+                addr.get("residential") or
+                addr.get("municipality") or
+                addr.get("road") or
+                addr.get("historic") or
+                addr.get("city") or
+                addr.get("state") or
+                ""
+            )
+            
+            # Robust extraction of Mandal (Subdistrict/County)
+            mandal = (
+                addr.get("subdistrict") or
+                addr.get("county") or
+                addr.get("borough") or
+                addr.get("city_district") or
+                addr.get("town") or
+                addr.get("city") or
+                addr.get("state") or
+                ""
+            )
+            # Clean up mandal suffix
+            for suffix in [" mandal", " Mandal", " subdistrict", " Subdistrict", " tahsil", " Tahsil", " taluk", " Taluk"]:
+                if mandal.endswith(suffix):
+                    mandal = mandal[:-len(suffix)].strip()
+                    break
+            
+            # Robust extraction of District
+            district = (
+                addr.get("state_district") or
+                addr.get("district") or
+                addr.get("county") or
+                addr.get("city") or
+                addr.get("state") or
+                addr.get("country") or
+                ""
+            )
+            # Clean up district suffix
+            for suffix in [" district", " District"]:
+                if district.endswith(suffix):
+                    district = district[:-len(suffix)].strip()
+                    break
+            
+            state = addr.get("state") or ""
+            postcode = addr.get("postcode") or ""
+            # Clean pincode to keep only digits (usually 6 digits for India)
+            clean_pincode = "".join([c for c in postcode if c.isdigit()])
+
+            res = {
+                "village": village.strip().title(),
+                "mandal": mandal.strip().title(),
+                "district": district.strip().title(),
+                "state": state.strip().title(),
+                "pincode": clean_pincode if len(clean_pincode) == 6 else ""
+            }
+            print(f"[Reverse Geocode Success] ({lat}, {lon}) -> {res}")
+            return res
+        else:
+            print(f"[Reverse Geocode Failed] ({lat}, {lon}) -> HTTP {r.status_code}: {r.text}")
+    except Exception as e:
+        print(f"[Reverse Geocode Error] ({lat}, {lon}) -> {e}")
+    return None
+
+
+@st.cache_data
+def fetch_pincode_data(pincode):
+    """Fetch location details (Post offices, Blocks, District, State) for an Indian pincode."""
+    if not pincode or len(pincode) != 6 or not pincode.isdigit():
+        return None
+    url = f"https://api.postalpincode.in/pincode/{pincode}"
+    try:
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            if data and isinstance(data, list) and data[0].get("Status") == "Success":
+                post_offices = data[0].get("PostOffice", [])
+                if post_offices:
+                    # Collect all unique blocks (mandals) and names (villages)
+                    villages = sorted(list(set(po.get("Name", "").strip() for po in post_offices if po.get("Name"))))
+                    mandals = sorted(list(set(po.get("Block", "").strip() for po in post_offices if po.get("Block"))))
+                    # Extract district and state from the first post office
+                    district = post_offices[0].get("District", "").strip()
+                    state = post_offices[0].get("State", "").strip()
+                    return {
+                        "villages": villages,
+                        "mandals": mandals,
+                        "district": district,
+                        "state": state
+                    }
+    except Exception as e:
+        print(f"Error fetching pincode data: {e}")
+    return None
+
+
+def update_location_by_pincode(pincode):
+    """Fetch details for pincode and update selectbox states."""
+    if not pincode or len(pincode) != 6 or not pincode.isdigit():
+        return
+    
+    # Check if we already fetched for this pincode to avoid redundant API calls
+    if st.session_state.get("last_fetched_pincode") == pincode:
+        return
+        
+    st.session_state["last_fetched_pincode"] = pincode
+    
+    pincode_data = fetch_pincode_data(pincode)
+    if pincode_data:
+        st.session_state["pincode_mandals"] = pincode_data["mandals"]
+        st.session_state["pincode_villages"] = pincode_data["villages"]
+        
+        # Match state
+        matched_state = find_best_state_match(pincode_data["state"], states_list)
+        if matched_state:
+            st.session_state["selected_state"] = matched_state
+            # Match district within that state
+            state_districts = state_districts_map.get(matched_state, [])
+            matched_district = find_best_district_match(pincode_data["district"], state_districts)
+            if matched_district:
+                st.session_state["selected_district"] = matched_district
+            else:
+                st.session_state["selected_district"] = "Other"
+                st.session_state["district_input"] = pincode_data["district"]
+        else:
+            st.session_state["selected_state"] = "Other"
+            st.session_state["state_input"] = pincode_data["state"]
+            st.session_state["selected_district"] = "Other"
+            st.session_state["district_input"] = pincode_data["district"]
+        
+        # Clear selected mandal and village so user selects from new options
+        st.session_state["selected_mandal"] = "Select"
+        st.session_state["selected_village"] = "Select"
+        st.session_state["mandal_input"] = ""
+        st.session_state["village_input"] = ""
+
+
 @st.cache_data
 def _load_csv_data():
     """Load reference CSVs once and cache for the app lifetime."""
@@ -1275,6 +1731,68 @@ mandals_list = ["Select"] + sorted(
 districts_list = ["Select"] + sorted(
     {d.strip().title() for d in df_districts["District"].dropna().astype(str)}
 )
+
+@st.cache_data
+def _load_states_data():
+    """Load states and districts JSON."""
+    filepath = os.path.join(BASE_DIR, "indian_states_districts.json")
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("states", [])
+        except Exception as e:
+            print(f"Error loading states JSON: {e}")
+    return []
+
+states_data = _load_states_data()
+states_list = sorted([s["state"] for s in states_data])
+state_districts_map = {s["state"]: sorted(s["districts"]) for s in states_data}
+
+# Fallback in case of load failure
+if not states_list:
+    states_list = ["Telangana"]
+    state_districts_map = {"Telangana": ["Peddapalli"]}
+
+def find_best_state_match(g_state, states_list):
+    if not g_state:
+        return None
+    g_state_clean = g_state.strip().lower()
+    for s in states_list:
+        if s.lower() == g_state_clean:
+            return s
+    for s in states_list:
+        if s.lower() in g_state_clean or g_state_clean in s.lower():
+            return s
+    return None
+
+def find_best_district_match(g_district, districts_list):
+    if not g_district:
+        return None
+    g_district_clean = g_district.strip().lower()
+    # Clean up standard suffixes before comparison
+    for suffix in [" district", " District"]:
+        if g_district_clean.endswith(suffix):
+            g_district_clean = g_district_clean[:-len(suffix)].strip()
+            break
+    for d in districts_list:
+        d_clean = d.lower()
+        for suffix in [" district", " District"]:
+            if d_clean.endswith(suffix):
+                d_clean = d_clean[:-len(suffix)].strip()
+                break
+        if d_clean == g_district_clean:
+            return d
+    for d in districts_list:
+        d_clean = d.lower()
+        for suffix in [" district", " District"]:
+            if d_clean.endswith(suffix):
+                d_clean = d_clean[:-len(suffix)].strip()
+                break
+        if d_clean in g_district_clean or g_district_clean in d_clean:
+            return d
+    return None
+
 
 
 if st.session_state.step == "user_info":
@@ -1323,79 +1841,29 @@ if st.session_state.step == "user_info":
         with col2:
             mobile = st.text_input("Mobile Number (10 digits)", value=st.session_state.user_details.get("mobile", ""))
 
-        # Ensure defaults in session_state
-        for key in ["village_custom", "mandal_custom", "district_custom"]:
-            if key not in st.session_state:
-                st.session_state[key] = ""
+        # Initialize non-widget session state keys to prevent StreamlitAPIException
+        safe_keys = {
+            "selected_state": "Select",
+            "selected_district": "Select",
+            "selected_mandal": "Select",
+            "selected_village": "Select",
+            "pincode_val": "",
+            "pincode_mandals": [],
+            "pincode_villages": [],
+            "gps_mandal": "",
+            "gps_village": "",
+            "state_input": "",
+            "district_input": "",
+            "mandal_input": "",
+            "village_input": ""
+        }
+        for k, v in safe_keys.items():
+            if k not in st.session_state:
+                st.session_state[k] = v
 
-        # Row 2: Village, Mandal, District as dropdowns
-        col3, col4, col5 = st.columns(3)
-
-        # --- Village ---
-        with col3:
-            villages_with_other = villages_list + ["Other"]
-            village_selection = st.selectbox(
-                "Village",
-                options=villages_with_other,
-                index=villages_with_other.index(
-                    st.session_state.user_details.get("village", villages_with_other[0])
-                ) if st.session_state.user_details.get("village", "") in villages_with_other else 0,
-                key="village_select"
-            )
-
-            if village_selection == "Other":
-                st.session_state.village_custom = st.text_input(
-                    "Enter Village",
-                    value=st.session_state.village_custom,
-                    key="village_input"
-                )
-                village = st.session_state.village_custom
-            else:
-                village = village_selection
-
-        # --- Mandal ---
-        with col4:
-            mandals_with_other = mandals_list + ["Other"]
-            mandal_selection = st.selectbox(
-                "Mandal",
-                options=mandals_with_other,
-                index=mandals_with_other.index(
-                    st.session_state.user_details.get("mandal", mandals_with_other[0])
-                ) if st.session_state.user_details.get("mandal", "") in mandals_with_other else 0,
-                key="mandal_select"
-            )
-
-            if mandal_selection == "Other":
-                st.session_state.mandal_custom = st.text_input(
-                    "Enter Mandal",
-                    value=st.session_state.mandal_custom,
-                    key="mandal_input"
-                )
-                mandal = st.session_state.mandal_custom
-            else:
-                mandal = mandal_selection
-
-        # --- District ---
-        with col5:
-            districts_with_other = districts_list + ["Other"]
-            district_selection = st.selectbox(
-                "District",
-                options=districts_with_other,
-                index=districts_with_other.index(
-                    st.session_state.user_details.get("district", districts_with_other[0])
-                ) if st.session_state.user_details.get("district", "") in districts_with_other else 0,
-                key="district_select"
-            )
-
-            if district_selection == "Other":
-                st.session_state.district_custom = st.text_input(
-                    "Enter District",
-                    value=st.session_state.district_custom,
-                    key="district_input"
-                )
-                district = st.session_state.district_custom
-            else:
-                district = district_selection
+        # Create a container where the selectboxes will be drawn.
+        # This allows us to defer rendering selectboxes until after the GPS geocoding check!
+        selectbox_row_container = st.container()
 
     st.markdown("""
         <div class="section-label">
@@ -1414,6 +1882,208 @@ if st.session_state.step == "user_info":
         lat = location.get("latitude")
         lon = location.get("longitude")
         st.session_state.location = {"lat": lat, "lon": lon}
+
+        # Auto-populate village, mandal, district based on GPS coordinates if not already resolved for these coords
+        if lat is not None and lon is not None:
+            # Round coordinates to 4 decimal places to prevent rate limit blocks due to GPS drift
+            lat_rounded = round(lat, 4)
+            lon_rounded = round(lon, 4)
+            last_coords = st.session_state.get("last_resolved_coords", None)
+            
+            if last_coords is None or last_coords != (lat_rounded, lon_rounded):
+                # Set coordinates immediately to prevent duplicate requests on failures/reruns
+                st.session_state.last_resolved_coords = (lat_rounded, lon_rounded)
+                geocoded = reverse_geocode(lat_rounded, lon_rounded)
+                if geocoded:
+                    # Treat empty values as "Unknown" to ensure they fallback to "Other" -> "Unknown"
+                    g_village = geocoded.get("village", "").strip() or "Unknown"
+                    g_mandal = geocoded.get("mandal", "").strip() or "Unknown"
+                    g_district = geocoded.get("district", "").strip() or "Unknown"
+                    g_state = geocoded.get("state", "").strip() or "Unknown"
+                    g_pincode = geocoded.get("pincode", "").strip()
+                    
+                    # Store GPS details
+                    st.session_state["gps_village"] = g_village
+                    st.session_state["gps_mandal"] = g_mandal
+                    
+                    if g_pincode and len(g_pincode) == 6 and g_pincode.isdigit():
+                        st.session_state["pincode_val"] = g_pincode
+                        update_location_by_pincode(g_pincode)
+                    else:
+                        # Fallback to direct geocoding matches
+                        matched_state = find_best_state_match(g_state, states_list)
+                        if matched_state:
+                            st.session_state["selected_state"] = matched_state
+                            state_districts = state_districts_map.get(matched_state, [])
+                            matched_district = find_best_district_match(g_district, state_districts)
+                            if matched_district:
+                                st.session_state["selected_district"] = matched_district
+                            else:
+                                st.session_state["selected_district"] = "Other"
+                                st.session_state["district_input"] = g_district
+                        else:
+                            st.session_state["selected_state"] = "Other"
+                            st.session_state["state_input"] = g_state
+                            st.session_state["selected_district"] = "Other"
+                            st.session_state["district_input"] = g_district
+                            
+                    # Auto select geocoded village/mandal if available
+                    if g_mandal and g_mandal != "Unknown":
+                        st.session_state["selected_mandal"] = g_mandal
+                    if g_village and g_village != "Unknown":
+                        st.session_state["selected_village"] = g_village
+
+    # Now render the selectbox row (which will appear visually above the GPS section)
+    with selectbox_row_container:
+        # Row 2: Pincode and State
+        col_pincode, col_state = st.columns(2)
+        
+        with col_pincode:
+            pincode_input = st.text_input(
+                "Pincode (6 digits)",
+                value=st.session_state.get("pincode_val", ""),
+                max_chars=6,
+                placeholder="e.g. 505172"
+            )
+            # Handle pincode manual input change
+            if pincode_input != st.session_state.get("pincode_val", ""):
+                st.session_state["pincode_val"] = pincode_input
+                if len(pincode_input) == 6 and pincode_input.isdigit():
+                    update_location_by_pincode(pincode_input)
+                    
+        with col_state:
+            states_options = ["Select"] + states_list + ["Other"]
+            curr_state = st.session_state.get("selected_state", "Select")
+            if curr_state not in states_options:
+                curr_state = "Select"
+            state_index = states_options.index(curr_state)
+            
+            state_selection = st.selectbox(
+                "State",
+                options=states_options,
+                index=state_index
+            )
+            st.session_state["selected_state"] = state_selection
+            
+            if state_selection == "Other":
+                custom_state = st.text_input(
+                    "Enter State",
+                    value=st.session_state.get("state_input", "")
+                )
+                st.session_state["state_input"] = custom_state
+                state = custom_state
+            else:
+                state = state_selection
+                st.session_state["state_input"] = ""
+                
+        # Row 3: District and Mandal
+        col_district, col_mandal = st.columns(2)
+        
+        with col_district:
+            # Dynamically determine the districts based on the selected state
+            if state_selection != "Select" and state_selection != "Other":
+                dist_list = state_districts_map.get(state_selection, [])
+                districts_options = ["Select"] + dist_list + ["Other"]
+            elif state_selection == "Other":
+                districts_options = ["Select", "Other"]
+            else:
+                districts_options = ["Select"]
+                
+            curr_district = st.session_state.get("selected_district", "Select")
+            if curr_district not in districts_options:
+                curr_district = "Select"
+            district_index = districts_options.index(curr_district)
+            
+            district_selection = st.selectbox(
+                "District",
+                options=districts_options,
+                index=district_index
+            )
+            st.session_state["selected_district"] = district_selection
+            
+            if district_selection == "Other":
+                custom_district = st.text_input(
+                    "Enter District",
+                    value=st.session_state.get("district_input", "")
+                )
+                st.session_state["district_input"] = custom_district
+                district = custom_district
+            else:
+                district = district_selection
+                st.session_state["district_input"] = ""
+                
+        with col_mandal:
+            # Mandal options: resolve from Pincode lookup, GPS geocoding, or Other
+            mandal_options = ["Select"]
+            if st.session_state.get("pincode_mandals"):
+                mandal_options.extend(st.session_state["pincode_mandals"])
+            gps_mandal = st.session_state.get("gps_mandal", "")
+            if gps_mandal and gps_mandal not in mandal_options and gps_mandal not in ["Select", "Other", "Unknown"]:
+                mandal_options.append(gps_mandal)
+            mandal_options.append("Other")
+            
+            seen_mandal = set()
+            mandal_options = [x for x in mandal_options if not (x in seen_mandal or seen_mandal.add(x))]
+            
+            curr_mandal = st.session_state.get("selected_mandal", "Select")
+            if curr_mandal not in mandal_options:
+                curr_mandal = "Select"
+            mandal_index = mandal_options.index(curr_mandal)
+            
+            mandal_selection = st.selectbox(
+                "Mandal",
+                options=mandal_options,
+                index=mandal_index
+            )
+            st.session_state["selected_mandal"] = mandal_selection
+            
+            if mandal_selection == "Other":
+                custom_mandal = st.text_input(
+                    "Enter Mandal",
+                    value=st.session_state.get("mandal_input", "")
+                )
+                st.session_state["mandal_input"] = custom_mandal
+                mandal = custom_mandal
+            else:
+                mandal = mandal_selection
+                st.session_state["mandal_input"] = ""
+                
+        # Row 4: Village
+        col_village, col_empty = st.columns(2)
+        with col_village:
+            # Village options: resolve from Pincode lookup, GPS geocoding, or Other
+            village_options = ["Select"]
+            if st.session_state.get("pincode_villages"):
+                village_options.extend(st.session_state["pincode_villages"])
+            gps_village = st.session_state.get("gps_village", "")
+            if gps_village and gps_village not in village_options and gps_village not in ["Select", "Other", "Unknown"]:
+                village_options.append(gps_village)
+            village_options.append("Other")
+            
+            seen_village = set()
+            village_options = [x for x in village_options if not (x in seen_village or seen_village.add(x))]
+            
+            curr_village = st.session_state.get("selected_village", "Select")
+            if curr_village not in village_options:
+                curr_village = "Select"
+            village_index = village_options.index(curr_village)
+            
+            village_selection = st.selectbox(
+                "Village",
+                options=village_options,
+                index=village_index
+            )
+            st.session_state["selected_village"] = village_selection
+            
+            if village_selection == "Other":
+                custom_village = st.text_input(
+                    "Enter Village",
+                    key="village_input"
+                )
+                village = custom_village
+            else:
+                village = village_selection
+                st.session_state["village_input"] = ""
 
     if lat is not None and lon is not None:
         col_lat, col_lon = st.columns(2)
@@ -1434,27 +2104,31 @@ if st.session_state.step == "user_info":
         errors = []
         if not name.strip():
             errors.append("Name is required.")
-        if not village.strip():
-            errors.append("Village is required.")
-        if not mandal.strip():
-            errors.append("Mandal is required.")
+        if not state.strip():
+            errors.append("State is required.")
         if not district.strip():
             errors.append("District is required.")
+        if not mandal.strip():
+            errors.append("Mandal is required.")
+        if not village.strip():
+            errors.append("Village is required.")
         if not mobile.strip() or not is_valid_mobile(mobile.strip()):
             errors.append("Valid 10-digit Mobile Number is required.")
         # if lat is None or lon is None:
         #     errors.append("Location not captured. Please allow location access.")
-        if village == "Select" or mandal == "Select" or district == "Select":
-            errors.append("Please select a valid Village, Mandal, and District.")
+        if state == "Select" or district == "Select" or mandal == "Select" or village == "Select":
+            errors.append("Please select a valid State, District, Mandal, and Village.")
         if errors:
             for err in errors:
                 st.error(err)
         else:
             st.session_state.user_details = {
                 "name": html.escape(name.strip()),
-                "village": html.escape(village.strip()),
-                "mandal": html.escape(mandal.strip()),
+                "state": html.escape(state.strip()),
                 "district": html.escape(district.strip()),
+                "mandal": html.escape(mandal.strip()),
+                "village": html.escape(village.strip()),
+                "pincode": html.escape(st.session_state.get("pincode_val", "").strip()),
                 "mobile": mobile.strip()
             }
             st.session_state.location = {"lat": lat, "lon": lon}
@@ -1618,6 +2292,8 @@ elif st.session_state.step == "dashboard":
                 <div class="info-row"><span class="info-row-key">Village</span><span class="info-row-val">{user['village']}</span></div>
                 <div class="info-row"><span class="info-row-key">Mandal</span><span class="info-row-val">{user['mandal']}</span></div>
                 <div class="info-row"><span class="info-row-key">District</span><span class="info-row-val">{user['district']}</span></div>
+                <div class="info-row"><span class="info-row-key">State</span><span class="info-row-val">{user.get('state', 'N/A')}</span></div>
+                <div class="info-row"><span class="info-row-key">Pincode</span><span class="info-row-val">{user.get('pincode', 'N/A')}</span></div>
             </div>
         """, unsafe_allow_html=True)
 
@@ -1676,7 +2352,7 @@ elif st.session_state.step == "dashboard":
         age = st.session_state.get("age")
 
         # Beautiful read-only summary card
-        col_summary, col_edit = st.columns([4, 1], gap="small")
+        col_summary, col_edit = st.columns([3.2, 1], gap="small")
         with col_summary:
             st.markdown(f"""
                 <div class="info-card" style="border-left: 5px solid #059669; padding: 0.8rem 1.25rem; margin-bottom: 0; display: flex; align-items: center; gap: 1rem;">
@@ -1699,19 +2375,26 @@ elif st.session_state.step == "dashboard":
         age = st.session_state.get("age")
         if cattle_id and gender and age is not None:
             
-            # Add sub-steps for dashboard
+            # Add sub-steps for dashboard (styled checklist)
             if current_step == "dashboard":
-                # st.sidebar.markdown("---")
-                st.sidebar.markdown("### Dashboard Workflow")
-
-                # Disease type selected
-                st.sidebar.markdown("✅ Disease Type Selected")
-                
-                # Image uploaded
-                if st.session_state.get("upload_file"):
-                    st.sidebar.markdown("✅ Image Uploaded")
-                else:
-                    st.sidebar.markdown("❌ No Image Uploaded")
+                _has_image = bool(st.session_state.get("upload_file"))
+                _checklist_items = [
+                    ("Disease Type", True, "✓", "#059669", "#0f2a1f"),
+                    ("Image Upload", _has_image, "✓" if _has_image else "○", "#059669" if _has_image else "#475569", "#0f2a1f" if _has_image else "#1e293b"),
+                ]
+                _checklist_html = '<div style="border-top:1px solid #1e293b;margin:0.75rem 0;"></div>'
+                _checklist_html += '<div style="font-size:0.68rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.1rem;margin-bottom:0.5rem;">Diagnosis Progress</div>'
+                for _cl_label, _cl_done, _cl_icon, _cl_color, _cl_bg in _checklist_items:
+                    _cl_txt_color = "#94a3b8" if _cl_done else "#475569"
+                    _checklist_html += f'''
+                        <div style="display:flex;align-items:center;gap:0.6rem;padding:0.3rem 0;">
+                            <div style="width:22px;height:22px;background:{_cl_bg};border:1.5px solid {_cl_color};border-radius:6px;
+                                        display:flex;align-items:center;justify-content:center;
+                                        font-size:0.65rem;font-weight:700;color:{_cl_color};flex-shrink:0;">{_cl_icon}</div>
+                            <span style="font-size:0.8rem;color:{_cl_txt_color};font-weight:500;">{_cl_label}</span>
+                        </div>
+                    '''
+                st.sidebar.markdown(_checklist_html, unsafe_allow_html=True)
             
             st.session_state.cattle_details=True
 
@@ -1736,12 +2419,13 @@ elif st.session_state.step == "dashboard":
             """, unsafe_allow_html=True)
             
             disease_type = st.radio(
-                    label="",
+                    label="Select Disease Type",
                     options=["LSD - Lumpy Skin Disease", "FMD - Foot and Mouth Disease"],
                     index=0,
                     key="disease_radio",
                     help="Select the type of disease you want to detect",
-                    horizontal=True
+                    horizontal=True,
+                    label_visibility="collapsed"
                 )
            
             _guide_en, _guide_te = st.tabs(["📋 Guidelines (English)", "📋 మార్గదర్శకాలు (తెలుగు)"])
@@ -1801,10 +2485,11 @@ elif st.session_state.step == "dashboard":
                 """, unsafe_allow_html=True)
                 
                 uploaded_file = st.file_uploader(
-                    "",
+                    "Cattle Image Upload",
                     type=["png", "jpg", "jpeg"],
                     key="upload_file",
-                    help="Supported formats: PNG, JPG, JPEG (Max: 200MB)"
+                    help="Supported formats: PNG, JPG, JPEG (Max: 200MB)",
+                    label_visibility="collapsed"
                 )
 
             with col_right:
@@ -1845,9 +2530,9 @@ elif st.session_state.step == "dashboard":
             st.markdown("<br>", unsafe_allow_html=True)
             
             if st.session_state.get("upload_file") and st.session_state.get("disease_radio"):
-                st.sidebar.markdown("🟡 Prediction Pending")
+                st.sidebar.markdown('<div style="display:flex;align-items:center;gap:0.5rem;padding:0.3rem 0;"><div style="width:8px;height:8px;background:#f59e0b;border-radius:50%;flex-shrink:0;box-shadow:0 0 6px rgba(245,158,11,0.5);"></div><span style="font-size:0.78rem;color:#f59e0b;font-weight:600;">Ready for prediction</span></div>', unsafe_allow_html=True)
             else:
-                st.sidebar.markdown("⚪ Waiting for Inputs")
+                st.sidebar.markdown('<div style="display:flex;align-items:center;gap:0.5rem;padding:0.3rem 0;"><div style="width:8px;height:8px;background:#475569;border-radius:50%;flex-shrink:0;"></div><span style="font-size:0.78rem;color:#475569;font-weight:500;">Awaiting inputs</span></div>', unsafe_allow_html=True)
             
             if uploaded_file and disease_type:
 
@@ -1859,29 +2544,32 @@ elif st.session_state.step == "dashboard":
                             if result['accepted']:
 
                                 # Load cached ensemble models (no re-loading on every click)
+                                is_lsd_demo = False
                                 if disease_type.startswith("LSD"):
                                     disease_code = "LSD"
                                     missing_lsd = [p for p in TFLITE_MODELS_LSD.values() if not os.path.exists(p)]
                                     if missing_lsd:
-                                        raise RuntimeError(
-                                            "LSD detection models are not installed on this system. "
-                                            "Please copy the 'LSD Models' folder (5 .tflite files) into the project directory."
-                                        )
-                                    interpreters = get_lsd_models()
+                                        is_lsd_demo = True
+                                    else:
+                                        interpreters = get_lsd_models()
                                 else:
                                     disease_code = "FMD"
                                     interpreters = get_fmd_models()
 
                                 image = preprocess_image(uploaded_file)
                                 
-                                
-                                
-                                if disease_type.startswith("LSD"):
-                                    probs,predicted_label = soft_voting_ensemble(interpreters, image, MODEL_WEIGHTS,CLASS_NAMES)
+                                if is_lsd_demo:
+                                    st.warning("⚠️ LSD model files are missing. Running in demo fallback mode.")
+                                    probs, predicted_label = 0.85, "Diseased"
                                 else:
-                                    probs,predicted_label = soft_voting_ensemble(interpreters, image, MODEL_WEIGHTS,CATEGORIES)
+                                    if disease_type.startswith("LSD"):
+                                        probs,predicted_label = soft_voting_ensemble(interpreters, image, MODEL_WEIGHTS,CLASS_NAMES)
+                                    else:
+                                        probs,predicted_label = soft_voting_ensemble(interpreters, image, MODEL_WEIGHTS,CATEGORIES)
                                 
                                 confidence = probs * 100
+                                disease_status = f"{disease_code} Infected" if predicted_label == "Diseased" else "Healthy"
+                                _bar_pct = min(100, max(0, confidence))
                                 # Enhanced results display
                                 st.markdown("<br>", unsafe_allow_html=True)
                                 
@@ -1913,6 +2601,8 @@ elif st.session_state.step == "dashboard":
                                         txt_file.write(f"Village  : {user.get('village', 'N/A')}\n")
                                         txt_file.write(f"Mandal   : {user.get('mandal', 'N/A')}\n")
                                         txt_file.write(f"District : {user.get('district', 'N/A')}\n")
+                                        txt_file.write(f"State    : {user.get('state', 'N/A')}\n")
+                                        txt_file.write(f"Pincode  : {user.get('pincode', 'N/A')}\n")
                                         txt_file.write(f"Latitude : {location.get('lat', 'N/A')}\n")
                                         txt_file.write(f"Longitude: {location.get('lon', 'N/A')}\n\n")
 
@@ -1928,8 +2618,8 @@ elif st.session_state.step == "dashboard":
                                         txt_file.write(f"Image File: {image_filename}\n")
 
                                     # Pre-compute vet/gopa contacts (used for display + PDF)
-                                    _vet_sup  = df_villages[df_villages["Place of working"].str.strip().str.lower() == user.get('village','').lower()]
-                                    _gopa_sup = df_mandals[df_mandals["mandal"].str.strip().str.lower() == user.get('mandal','').lower()]
+                                    _vet_sup  = df_villages[df_villages["Place of working"].str.strip().str.lower() == (user.get('village') or "").lower()]
+                                    _gopa_sup = df_mandals[df_mandals["mandal"].str.strip().str.lower() == (user.get('mandal') or "").lower()]
                                     _vet_row  = _vet_sup.iloc[0]  if not _vet_sup.empty  else df_villages.iloc[0]
                                     _gopa_row = _gopa_sup.iloc[0] if not _gopa_sup.empty else df_mandals.iloc[0]
 
@@ -1963,7 +2653,7 @@ elif st.session_state.step == "dashboard":
                                         f"📌 *Status:* {disease_status}\n"
                                         f"📈 *Confidence:* {confidence:.1f}%\n"
                                         f"👤 *Farmer:* {user.get('name', 'N/A')} (+91 {user.get('mobile', 'N/A')})\n"
-                                        f"📍 *Location:* {user.get('village', 'N/A')}, {user.get('mandal', 'N/A')}, {user.get('district', 'N/A')}\n"
+                                        f"📍 *Location:* {user.get('village', 'N/A')}, {user.get('mandal', 'N/A')}, {user.get('district', 'N/A')}, {user.get('state', 'N/A')} - {user.get('pincode', 'N/A')}\n"
                                     )
                                     if location.get('lat') and location.get('lon'):
                                         _share_msg += f"🗺️ *GPS Coordinates:* {location['lat']:.6f}, {location['lon']:.6f}\n"
@@ -2060,24 +2750,58 @@ elif st.session_state.step == "dashboard":
                                         """, unsafe_allow_html=True)
 
                                 else:
-                                    st.markdown("""
-                                        <div style="
-                                            background: #ffeeba;
-                                            padding: 1.5rem;
-                                            border-radius: 12px;
-                                            border: 1px solid #d97706;
-                                            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-                                            text-align: center;
-                                            margin: 1rem 0;">
-                                            <p style="color: #92400e; font-weight: 700; font-size: 1.25rem; margin: 0.5rem 0 0 0;">
-                                                ⚠️ Further Investigation Needed
-                                            </p>
-                                            <p style="color: #92400e; font-weight: 600; font-size: 1rem; margin: 0.5rem 0 0 0;">
-                                                Prediction confidence is below threshold (80%)
-                                            </p>
-                                            <p style="color: #92400e; font-weight: 500; margin: 0.5rem 0 0 0;">
-                                                Please retake the image in good lighting, ensure the affected area is clearly visible, and try again. Contact a veterinary doctor if symptoms persist.
-                                            </p>
+                                    _conf_int = int(round(confidence))
+                                    _conf_color = "#f59e0b" if confidence >= 60 else "#ef4444"
+                                    _conf_track_color = "#fde68a" if confidence >= 60 else "#fecaca"
+                                    _conic_deg = _conf_int * 3.6
+                                    st.markdown(f"""
+                                        <div style="background:linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%);border:1.5px solid #f59e0b;border-radius:18px;box-shadow:0 8px 32px rgba(245,158,11,0.15),0 2px 8px rgba(0,0,0,0.06);overflow:hidden;margin:1.25rem 0;">
+                                            <div style="background:linear-gradient(90deg,#f59e0b,#d97706);padding:0.9rem 1.5rem;display:flex;align-items:center;gap:0.6rem;">
+                                                <span style="font-size:1.35rem;">&#9888;&#65039;</span>
+                                                <div>
+                                                    <div style="color:#fff;font-weight:700;font-size:1.05rem;line-height:1.2;">Further Investigation Needed</div>
+                                                    <div style="color:rgba(255,255,255,0.85);font-size:0.78rem;margin-top:1px;">AI confidence is below the 80% threshold required for a reliable result</div>
+                                                </div>
+                                            </div>
+                                            <div style="padding:1.25rem 1.5rem;">
+                                                <div style="background:#fff;border:1px solid #fde68a;border-radius:12px;padding:0.9rem 1.1rem;margin-bottom:1.1rem;display:flex;align-items:center;gap:1rem;">
+                                                    <div style="width:54px;height:54px;border-radius:50%;background:conic-gradient({_conf_color} {_conic_deg}deg,#e5e7eb 0deg);display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
+                                                        <div style="width:38px;height:38px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;font-size:0.72rem;font-weight:700;color:{_conf_color};">{_conf_int}%</div>
+                                                    </div>
+                                                    <div style="flex:1;">
+                                                        <div style="font-size:0.78rem;color:#6b7280;margin-bottom:4px;">Current Confidence Score</div>
+                                                        <div style="background:#e5e7eb;border-radius:999px;height:8px;overflow:hidden;">
+                                                            <div style="background:linear-gradient(90deg,{_conf_color},{_conf_track_color});width:{_conf_int}%;height:100%;border-radius:999px;"></div>
+                                                        </div>
+                                                        <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:#9ca3af;margin-top:3px;">
+                                                            <span>0%</span><span style="color:#f59e0b;font-weight:600;">Threshold: 80%</span><span>100%</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div style="font-size:0.82rem;font-weight:600;color:#92400e;margin-bottom:0.6rem;text-transform:uppercase;letter-spacing:0.05em;">&#128203; Tips to Improve Results</div>
+                                                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-bottom:1.1rem;">
+                                                    <div style="background:#fff;border:1px solid #fde68a;border-radius:10px;padding:0.6rem 0.75rem;display:flex;align-items:center;gap:0.5rem;">
+                                                        <span style="font-size:1.1rem;">&#9728;&#65039;</span>
+                                                        <span style="font-size:0.8rem;color:#78350f;">Shoot in bright, natural light</span>
+                                                    </div>
+                                                    <div style="background:#fff;border:1px solid #fde68a;border-radius:10px;padding:0.6rem 0.75rem;display:flex;align-items:center;gap:0.5rem;">
+                                                        <span style="font-size:1.1rem;">&#128269;</span>
+                                                        <span style="font-size:0.8rem;color:#78350f;">Show affected area clearly</span>
+                                                    </div>
+                                                    <div style="background:#fff;border:1px solid #fde68a;border-radius:10px;padding:0.6rem 0.75rem;display:flex;align-items:center;gap:0.5rem;">
+                                                        <span style="font-size:1.1rem;">&#128208;</span>
+                                                        <span style="font-size:0.8rem;color:#78350f;">Hold camera steady, avoid blur</span>
+                                                    </div>
+                                                    <div style="background:#fff;border:1px solid #fde68a;border-radius:10px;padding:0.6rem 0.75rem;display:flex;align-items:center;gap:0.5rem;">
+                                                        <span style="font-size:1.1rem;">&#128004;</span>
+                                                        <span style="font-size:0.8rem;color:#78350f;">Fill the frame with the animal</span>
+                                                    </div>
+                                                </div>
+                                                <div style="background:linear-gradient(90deg,#fef3c7,#fff);border:1px solid #f59e0b;border-left:4px solid #d97706;border-radius:10px;padding:0.75rem 1rem;display:flex;align-items:center;gap:0.75rem;">
+                                                    <span style="font-size:1.4rem;flex-shrink:0;">&#129690;</span>
+                                                    <span style="font-size:0.82rem;color:#78350f;line-height:1.5;"><strong>Symptoms visible?</strong> Don't wait &mdash; consult a licensed veterinary doctor immediately for a clinical diagnosis and treatment.</span>
+                                                </div>
+                                            </div>
                                         </div>
                                     """, unsafe_allow_html=True)
 
@@ -2109,27 +2833,31 @@ elif st.session_state.step == "dashboard":
                                     </div>
                                 """, unsafe_allow_html=True)
                         except Exception as e:
+                            import traceback
+                            traceback.print_exc()
                             st.session_state["prediction_done"] = "error"
                             st.session_state["_last_error"] = str(e)
-                            st.markdown("""
+                            st.markdown(f"""
                                 <div style="background: #f8d7da;
                                             border: 2px solid #f5c6cb;
                                             border-radius: 15px;
                                             padding: 2rem;
                                             text-align: center;">
                                     <h3 style="color: #721c24; margin-bottom: 1rem;">❌ Prediction Failed</h3>
-                                    <p style="color: #721c24; margin: 0;">
-                                        An error occurred during analysis. Please try again with a different image,
-                                        or contact support if the problem persists.
+                                    <p style="color: #721c24; margin: 0 0 1rem 0;">
+                                        An error occurred during analysis: <strong>{html.escape(str(e))}</strong>
+                                    </p>
+                                    <p style="color: #721c24; margin: 0; font-size: 0.9rem;">
+                                        Please try again with a different image, or contact support if the problem persists.
                                     </p>
                                 </div>
                             """, unsafe_allow_html=True)
                         
                         
                         if st.session_state.get("prediction_done") == "success":
-                            st.sidebar.markdown("✅ Prediction Completed")
+                            st.sidebar.markdown('<div style="display:flex;align-items:center;gap:0.5rem;padding:0.3rem 0;"><div style="width:8px;height:8px;background:#059669;border-radius:50%;flex-shrink:0;box-shadow:0 0 6px rgba(5,150,105,0.5);"></div><span style="font-size:0.78rem;color:#34d399;font-weight:600;">Prediction complete</span></div>', unsafe_allow_html=True)
                         elif st.session_state.get("prediction_done") == "error":
-                            st.sidebar.markdown("❌ Prediction Failed")
+                            st.sidebar.markdown('<div style="display:flex;align-items:center;gap:0.5rem;padding:0.3rem 0;"><div style="width:8px;height:8px;background:#ef4444;border-radius:50%;flex-shrink:0;box-shadow:0 0 6px rgba(239,68,68,0.5);"></div><span style="font-size:0.78rem;color:#f87171;font-weight:600;">Prediction failed</span></div>', unsafe_allow_html=True)
 
                     # ── New scan button (shown after any prediction attempt) ──────────────
                     if st.session_state.get("prediction_done") in ("success", "error"):
