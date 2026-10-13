@@ -1,0 +1,1098 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CHMI - Cattle Health Monitor | UI Screens</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --base-font-size: 20px;
+            --primary-purple: #5c5cd6;
+            --purple-gradient: linear-gradient(90deg, #4f46e5 0%, #6366f1 100%);
+            --lavender-card: #ede8f5;
+            --lavender-pill: #e6e0f3;
+            --green-badge: #e6f9ed;
+            --green-text: #16a34a;
+            --green-dark: #15803d;
+            --red-warning-bg: #fff1f2;
+            --red-warning-border: #fecdd3;
+            --red-text: #dc2626;
+            --border-light: #e2e8f0;
+            --text-dark: #1e293b;
+            --text-muted: #64748b;
+            --sidebar-width: 260px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+
+        body {
+            background-color: #f8fafc;
+            color: var(--text-dark);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Top Screen Switcher Header */
+        .preview-toolbar {
+            background: #0f172a;
+            color: #fff;
+            padding: 0.6rem 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            font-size: 14px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+
+        .preview-toolbar-title {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            font-weight: 700;
+            letter-spacing: -0.01em;
+        }
+
+        .preview-toolbar-badge {
+            background: #10b981;
+            color: #fff;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 999px;
+            text-transform: uppercase;
+        }
+
+        .screen-tabs {
+            display: flex;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+        }
+
+        .screen-tab-btn {
+            background: #1e293b;
+            color: #cbd5e1;
+            border: 1px solid #334155;
+            padding: 0.35rem 0.75rem;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .screen-tab-btn:hover {
+            background: #334155;
+            color: #fff;
+        }
+
+        .screen-tab-btn.active {
+            background: #6366f1;
+            color: #fff;
+            border-color: #6366f1;
+            box-shadow: 0 0 10px rgba(99, 102, 241, 0.4);
+        }
+
+        /* Browser Window Simulation */
+        .browser-chrome {
+            background: #e2e8f0;
+            border-bottom: 1px solid #cbd5e1;
+            padding: 0.45rem 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 12px;
+            color: #475569;
+        }
+
+        .browser-dots {
+            display: flex;
+            gap: 6px;
+        }
+
+        .browser-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+        .dot-red { background: #ef4444; }
+        .dot-yellow { background: #f59e0b; }
+        .dot-green { background: #10b981; }
+
+        .browser-url-bar {
+            background: #fff;
+            padding: 0.2rem 0.8rem;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #334155;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            flex: 1;
+            max-width: 480px;
+            border: 1px solid #cbd5e1;
+        }
+
+        .browser-url-bar span.security {
+            color: #d97706;
+            font-size: 11px;
+            display: flex;
+            align-items: center;
+            gap: 3px;
+        }
+
+        /* App Container */
+        .app-layout {
+            display: flex;
+            flex: 1;
+            background: #ffffff;
+            min-height: calc(100vh - 80px);
+        }
+
+        /* Left Sidebar (Matching exact avronline.co.in) */
+        .sidebar {
+            width: var(--sidebar-width);
+            background: #ffffff;
+            border-right: 1px solid #f1f5f9;
+            padding: 1.5rem 1.25rem;
+            flex-shrink: 0;
+            font-size: 14px;
+        }
+
+        .sidebar-section {
+            margin-bottom: 2rem;
+        }
+
+        .sidebar-heading {
+            font-size: 14px;
+            font-weight: 600;
+            color: #1e293b;
+            margin-bottom: 0.75rem;
+        }
+
+        /* Font Size Control */
+        .font-size-control {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .btn-round-control {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+            background: #ffffff;
+            color: #5c5cd6;
+            font-weight: 700;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+            transition: all 0.15s;
+        }
+
+        .btn-round-control:hover {
+            border-color: #cbd5e1;
+            background: #f8fafc;
+        }
+
+        .font-size-value {
+            font-size: 15px;
+            font-weight: 600;
+            color: #1e293b;
+            min-width: 24px;
+            text-align: center;
+        }
+
+        /* User Progress */
+        .progress-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 0.85rem;
+        }
+
+        .progress-item {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            font-size: 14px;
+            color: #334155;
+            font-weight: 500;
+        }
+
+        .check-box-icon {
+            width: 18px;
+            height: 18px;
+            background: #10b981;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-size: 11px;
+            font-weight: 800;
+            flex-shrink: 0;
+        }
+
+        .radio-active-icon {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #10b981;
+            border: 3px solid #bbf7d0;
+            flex-shrink: 0;
+        }
+
+        .circle-pending-icon {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid #cbd5e1;
+            background: #ffffff;
+            flex-shrink: 0;
+        }
+
+        .dot-warning-icon {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #f59e0b;
+            border: 2px solid #fef3c7;
+            flex-shrink: 0;
+        }
+
+        /* Main Workspace */
+        .main-content {
+            flex: 1;
+            padding: 2.5rem 3.5rem;
+            background: #ffffff;
+            max-width: 1050px;
+        }
+
+        .font-scalable {
+            font-size: var(--base-font-size);
+        }
+
+        /* Purple Button */
+        .btn-purple-primary {
+            width: 100%;
+            background: var(--purple-gradient);
+            color: #ffffff;
+            border: none;
+            border-radius: 10px;
+            padding: 0.85rem 1.5rem;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: center;
+            box-shadow: 0 4px 14px rgba(79, 70, 229, 0.25);
+            transition: all 0.2s ease;
+            margin: 1.5rem 0;
+            display: block;
+        }
+
+        .btn-purple-primary:hover {
+            box-shadow: 0 6px 20px rgba(79, 70, 229, 0.35);
+            transform: translateY(-1px);
+        }
+
+        /* Badge Pill */
+        .file-size-pill {
+            background: var(--green-badge);
+            color: #166534;
+            padding: 0.6rem 1.25rem;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            display: inline-block;
+            margin-bottom: 0.5rem;
+        }
+
+        /* Lavender Cards */
+        .lavender-card-container {
+            background: var(--lavender-card);
+            border-radius: 16px;
+            padding: 1.75rem 2rem;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+            margin-top: 1.5rem;
+        }
+
+        .lavender-card-title {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 1.25rem;
+        }
+
+        .lavender-card-title.green {
+            color: var(--green-dark);
+        }
+
+        .lavender-card-title.red {
+            color: var(--red-text);
+        }
+
+        .white-inner-box {
+            background: #ffffff;
+            border-radius: 12px;
+            padding: 1.5rem 2rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.02);
+            margin-bottom: 1.25rem;
+        }
+
+        .status-text {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .status-text.green { color: var(--green-dark); }
+        .status-text.red { color: var(--red-text); }
+
+        .confidence-text {
+            font-size: 15px;
+            font-weight: 500;
+            color: #334155;
+        }
+
+        .analysis-type-pill {
+            background: #ffffff;
+            border-radius: 10px;
+            padding: 0.75rem 1.5rem;
+            font-size: 14px;
+            font-weight: 600;
+            color: #334155;
+            display: inline-block;
+            width: 100%;
+        }
+
+        /* Warning Card (Image 2) */
+        .warning-card-container {
+            background: #fff1f2;
+            border: 1px solid #fecdd3;
+            border-radius: 14px;
+            padding: 2.25rem 2rem;
+            text-align: center;
+            margin-top: 1.5rem;
+        }
+
+        .warning-header {
+            color: var(--red-text);
+            font-size: 18px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.4rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .warning-title {
+            color: var(--red-text);
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .warning-desc {
+            color: var(--red-text);
+            font-size: 14px;
+            font-weight: 400;
+            line-height: 1.5;
+        }
+
+        /* Two Column Layout (Image 3) */
+        .two-column-results {
+            display: grid;
+            grid-template-columns: 1fr 1.15fr;
+            gap: 1.5rem;
+            margin-top: 1.5rem;
+        }
+
+        .vet-support-card {
+            background: var(--lavender-card);
+            border-radius: 16px;
+            padding: 1.75rem 2rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+            text-align: center;
+        }
+
+        .vet-support-card h3 {
+            color: var(--red-text);
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 1.5rem;
+        }
+
+        .vet-person-block {
+            margin-bottom: 1.5rem;
+        }
+
+        .vet-person-name {
+            font-size: 17px;
+            font-weight: 700;
+            color: #1e293b;
+            margin-bottom: 0.25rem;
+        }
+
+        .vet-person-details {
+            font-size: 13.5px;
+            color: #475569;
+            line-height: 1.5;
+        }
+
+        /* Forms Styling for Step 1 & Step 2 & Step 3 initial */
+        .form-section-card {
+            background: #ffffff;
+            border: 1.5px solid #ede8f5;
+            border-radius: 16px;
+            padding: 2rem 2.25rem;
+            box-shadow: 0 2px 12px rgba(124, 58, 237, 0.04);
+            margin-top: 1.5rem;
+        }
+
+        .form-heading {
+            font-size: 22px;
+            font-weight: 700;
+            color: #0f172a;
+            margin-bottom: 0.4rem;
+        }
+
+        .form-subheading {
+            font-size: 14px;
+            color: var(--text-muted);
+            margin-bottom: 1.75rem;
+        }
+
+        .form-grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.25rem;
+            margin-bottom: 1.25rem;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+            margin-bottom: 1.25rem;
+        }
+
+        .form-label {
+            font-size: 13.5px;
+            font-weight: 600;
+            color: #334155;
+        }
+
+        .form-input, .form-select {
+            padding: 0.7rem 0.9rem;
+            border: 1.5px solid #cbd5e1;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #1e293b;
+            outline: none;
+            transition: all 0.2s;
+            background: #ffffff;
+        }
+
+        .form-input:focus, .form-select:focus {
+            border-color: #6366f1;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+        }
+
+        .gps-card-box {
+            background: #f8fafc;
+            border: 1.5px dashed #cbd5e1;
+            border-radius: 10px;
+            padding: 1rem 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1.25rem;
+        }
+
+        .gps-coords-text {
+            font-size: 13px;
+            color: #334155;
+            font-weight: 500;
+        }
+
+        .gps-detect-btn {
+            background: #ffffff;
+            border: 1.5px solid #6366f1;
+            color: #4f46e5;
+            font-size: 12.5px;
+            font-weight: 600;
+            padding: 0.45rem 0.9rem;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .gps-detect-btn:hover {
+            background: #4f46e5;
+            color: #ffffff;
+        }
+
+        /* OTP Code Boxes */
+        .otp-inputs-row {
+            display: flex;
+            gap: 0.75rem;
+            justify-content: center;
+            margin: 2rem 0 1.5rem;
+        }
+
+        .otp-digit-box {
+            width: 52px;
+            height: 58px;
+            border: 2px solid #cbd5e1;
+            border-radius: 10px;
+            text-align: center;
+            font-size: 24px;
+            font-weight: 700;
+            color: #1e293b;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        .otp-digit-box:focus {
+            border-color: #6366f1;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+            background: #fdfcff;
+        }
+
+        /* Radio Options */
+        .radio-pills {
+            display: flex;
+            gap: 1.5rem;
+            margin: 1rem 0;
+        }
+
+        .radio-option {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 14.5px;
+            font-weight: 600;
+            color: #334155;
+            cursor: pointer;
+        }
+
+        .sample-images-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+            margin: 1.25rem 0;
+        }
+
+        .sample-img-box {
+            border-radius: 10px;
+            overflow: hidden;
+            border: 1px solid #e2e8f0;
+            height: 140px;
+            background: #f1f5f9;
+        }
+
+        .sample-img-box img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .preview-crop-container {
+            border-radius: 10px;
+            overflow: hidden;
+            border: 1px solid #e2e8f0;
+            max-width: 480px;
+            margin: 0 auto 0.75rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+
+        .preview-crop-container img {
+            width: 100%;
+            height: 180px;
+            object-fit: cover;
+            display: block;
+        }
+
+        .screen-view {
+            display: none;
+        }
+
+        .screen-view.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- SCREEN SELECTOR BAR -->
+    <div class="preview-toolbar">
+        <div class="preview-toolbar-title">
+            <span>🐄 CHMI - Cattle Health Monitor</span>
+            <span class="preview-toolbar-badge">avronline.co.in</span>
+        </div>
+        <div class="screen-tabs">
+            <button class="screen-tab-btn active" onclick="switchScreen('step1')">Step 1: User Info</button>
+            <button class="screen-tab-btn" onclick="switchScreen('step2')">Step 2: OTP Verification</button>
+            <button class="screen-tab-btn" onclick="switchScreen('step3-upload')">Step 3: Initial Upload</button>
+            <button class="screen-tab-btn" onclick="switchScreen('step3-healthy')">Step 3: Result (Healthy)</button>
+            <button class="screen-tab-btn" onclick="switchScreen('step3-warning')">Step 3: Warning</button>
+            <button class="screen-tab-btn" onclick="switchScreen('step3-diseased')">Step 3: Result (Infected)</button>
+        </div>
+    </div>
+
+    <!-- BROWSER SIMULATION BAR -->
+    <div class="browser-chrome">
+        <div class="browser-dots">
+            <div class="browser-dot dot-red"></div>
+            <div class="browser-dot dot-yellow"></div>
+            <div class="browser-dot dot-green"></div>
+        </div>
+        <div class="browser-url-bar">
+            <span class="security">⚠️ Not secure</span>
+            <span id="currentUrl">avronline.co.in</span>
+        </div>
+    </div>
+
+    <!-- MAIN APP LAYOUT -->
+    <div class="app-layout">
+
+        <!-- SIDEBAR (Dynamic based on current screen) -->
+        <aside class="sidebar">
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Font Size Control</div>
+                <div class="font-size-control">
+                    <button class="btn-round-control" onclick="adjustFont(-2)">−</button>
+                    <span class="font-size-value" id="fontSizeDisplay">20</span>
+                    <button class="btn-round-control" onclick="adjustFont(2)">+</button>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="sidebar-heading">User Progress</div>
+                <ul class="progress-list" id="userProgressList">
+                    <!-- Populated by JS -->
+                </ul>
+            </div>
+
+            <div class="sidebar-section" id="dashboardWorkflowSection" style="display: none;">
+                <div class="sidebar-heading">Dashboard Workflow</div>
+                <ul class="progress-list" id="dashboardWorkflowList">
+                    <!-- Populated by JS -->
+                </ul>
+            </div>
+        </aside>
+
+        <!-- MAIN CONTENT AREA -->
+        <main class="main-content font-scalable" id="mainScalableContent">
+
+            <!-- ═══════════════ SCREEN 1: STEP 1 - USER INFO ═══════════════ -->
+            <div id="screen-step1" class="screen-view active">
+                <div class="form-section-card">
+                    <h2 class="form-heading">User Registration</h2>
+                    <p class="form-subheading">Enter your contact and location details to start cattle health monitoring</p>
+
+                    <div class="form-group">
+                        <label class="form-label">Name</label>
+                        <input type="text" class="form-input" placeholder="Enter farmer or veterinarian name" value="A Mohan Reddy">
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Mobile Number (10 digits)</label>
+                        <div style="display:flex; gap:0.5rem;">
+                            <span style="display:flex;align-items:center;background:#f1f5f9;border:1.5px solid #cbd5e1;border-radius:8px;padding:0 0.8rem;font-weight:600;font-size:14px;color:#475569;">+91</span>
+                            <input type="tel" class="form-input" style="flex:1;" placeholder="9441037493" value="9441037493">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Farm GPS Coordinates</label>
+                        <div class="gps-card-box">
+                            <span class="gps-coords-text">📍 Latitude: 18.7214° N &nbsp;|&nbsp; Longitude: 79.1287° E (Telangana)</span>
+                            <button class="gps-detect-btn">Detect Location</button>
+                        </div>
+                    </div>
+
+                    <div class="form-grid-2">
+                        <div class="form-group">
+                            <label class="form-label">State</label>
+                            <select class="form-select">
+                                <option selected>Telangana</option>
+                                <option>Andhra Pradesh</option>
+                                <option>Karnataka</option>
+                                <option>Maharashtra</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">District</label>
+                            <select class="form-select">
+                                <option selected>Karimnagar</option>
+                                <option>Peddapalli</option>
+                                <option>Jagityal</option>
+                                <option>Rangareddy</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-grid-2">
+                        <div class="form-group">
+                            <label class="form-label">Mandal</label>
+                            <select class="form-select">
+                                <option selected>Dharmaram</option>
+                                <option>Sultanabad</option>
+                                <option>Chinnakalvala</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Village</label>
+                            <select class="form-select">
+                                <option selected>Chinnakalvala</option>
+                                <option>Dharmaram</option>
+                                <option>Other</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Pincode</label>
+                        <input type="text" class="form-input" placeholder="e.g. 505416" value="505416">
+                    </div>
+
+                    <button class="btn-purple-primary" onclick="switchScreen('step2')">
+                        Submit & Request OTP →
+                    </button>
+                </div>
+            </div>
+
+            <!-- ═══════════════ SCREEN 2: STEP 2 - OTP VERIFICATION ═══════════════ -->
+            <div id="screen-step2" class="screen-view">
+                <div class="form-section-card" style="max-width: 580px; margin: 2rem auto; text-align: center;">
+                    <div style="width: 64px; height: 64px; background: #ede8f5; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 1.25rem; font-size: 28px;">📱</div>
+                    <h2 class="form-heading">OTP Verification</h2>
+                    <p class="form-subheading">A 6-digit verification code was sent to <strong style="color:#1e293b;">+91 9441037493</strong></p>
+
+                    <div class="otp-inputs-row">
+                        <input type="text" class="otp-digit-box" maxlength="1" value="4">
+                        <input type="text" class="otp-digit-box" maxlength="1" value="8">
+                        <input type="text" class="otp-digit-box" maxlength="1" value="2">
+                        <input type="text" class="otp-digit-box" maxlength="1" value="9">
+                        <input type="text" class="otp-digit-box" maxlength="1" value="1">
+                        <input type="text" class="otp-digit-box" maxlength="1" value="6">
+                    </div>
+
+                    <div style="font-size: 13.5px; color: #64748b; margin-bottom: 1.5rem;">
+                        Resend OTP in <span style="font-weight: 700; color: #4f46e5;">24s</span> &nbsp;•&nbsp; 
+                        <a href="javascript:void(0)" onclick="switchScreen('step1')" style="color: #6366f1; text-decoration: none; font-weight: 600;">Edit Mobile Number</a>
+                    </div>
+
+                    <button class="btn-purple-primary" onclick="switchScreen('step3-upload')">
+                        Verify & Continue to Dashboard →
+                    </button>
+                </div>
+            </div>
+
+            <!-- ═══════════════ SCREEN 3: STEP 3 - INITIAL UPLOAD STATE ═══════════════ -->
+            <div id="screen-step3-upload" class="screen-view">
+                <div class="form-section-card" style="margin-top: 0; margin-bottom: 1.5rem;">
+                    <div class="form-grid-2">
+                        <div class="form-group" style="margin-bottom:0;">
+                            <label class="form-label">Cattle ID</label>
+                            <input type="text" class="form-input" value="#TS-1042">
+                        </div>
+                        <div class="form-group" style="margin-bottom:0;">
+                            <label class="form-label">Gender</label>
+                            <select class="form-select">
+                                <option selected>Cow</option>
+                                <option>Bull</option>
+                                <option>Calf</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 1rem;">
+                    <label class="form-label">Select Disease Type</label>
+                    <div class="radio-pills">
+                        <label class="radio-option">
+                            <input type="radio" name="disease" checked>
+                            LSD - Lumpy Skin Disease
+                        </label>
+                        <label class="radio-option">
+                            <input type="radio" name="disease">
+                            FMD - Foot and Mouth Disease
+                        </label>
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 1.5rem;">
+                    <div style="font-size: 13px; color: #64748b; margin-bottom: 0.5rem;">
+                        Reference samples — ensure your image shows a similar view of the affected area
+                    </div>
+                    <div class="sample-images-grid">
+                        <div class="sample-img-box"><img src="../LSD%20Images/1.jpg" onerror="this.src='https://images.unsplash.com/photo-1570042225831-d98fa7577f1e?w=500&auto=format&fit=crop&q=60'" alt="Sample 1"></div>
+                        <div class="sample-img-box"><img src="../LSD%20Images/2.jpg" onerror="this.src='https://images.unsplash.com/photo-1546445317-29f4545e9d53?w=500&auto=format&fit=crop&q=60'" alt="Sample 2"></div>
+                        <div class="sample-img-box"><img src="../LSD%20Images/3.jpg" onerror="this.src='https://images.unsplash.com/photo-1527153857715-3908f2bae5e8?w=500&auto=format&fit=crop&q=60'" alt="Sample 3"></div>
+                    </div>
+                </div>
+
+                <!-- Preview Box & File Size -->
+                <div style="text-align: right; margin-bottom: 0.5rem;">
+                    <div style="font-size: 13.5px; color: #64748b; margin-bottom: 0.25rem;">Ready for Analysis</div>
+                    <div class="file-size-pill">File Size : 0.06 MB</div>
+                </div>
+
+                <div class="preview-crop-container">
+                    <img src="../LSD%20Images/1.jpg" onerror="this.src='https://images.unsplash.com/photo-1570042225831-d98fa7577f1e?w=500&auto=format&fit=crop&q=60'" alt="Uploaded preview">
+                </div>
+
+                <button class="btn-purple-primary" onclick="switchScreen('step3-healthy')">
+                    Submit for Prediction
+                </button>
+            </div>
+
+            <!-- ═══════════════ SCREEN 4: STEP 3 - RESULT (HEALTHY) (IMAGE 1) ═══════════════ -->
+            <div id="screen-step3-healthy" class="screen-view">
+                <div style="text-align: right; margin-bottom: 0.5rem;">
+                    <div style="font-size: 13.5px; color: #64748b; margin-bottom: 0.25rem;">Ready for Analysis</div>
+                    <div class="file-size-pill">File Size : 0.06 MB</div>
+                </div>
+
+                <button class="btn-purple-primary" onclick="switchScreen('step3-upload')">
+                    Submit for Prediction
+                </button>
+
+                <div class="lavender-card-container" style="max-width: 480px; margin: 1.5rem auto;">
+                    <h2 class="lavender-card-title green">Prediction Result</h2>
+                    <div class="white-inner-box">
+                        <div class="status-text green">Status: Healthy</div>
+                        <div class="confidence-text">Confidence: 96.16%</div>
+                    </div>
+                    <div class="analysis-type-pill">
+                        Analysis Type: LSD - Lumpy Skin Disease
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══════════════ SCREEN 5: STEP 3 - WARNING (IMAGE 2) ═══════════════ -->
+            <div id="screen-step3-warning" class="screen-view">
+                <div class="preview-crop-container">
+                    <img src="../LSD%20Images/2.jpg" onerror="this.src='https://images.unsplash.com/photo-1546445317-29f4545e9d53?w=500&auto=format&fit=crop&q=60'" alt="Sample">
+                </div>
+
+                <div style="text-align: right; margin-bottom: 0.5rem;">
+                    <div style="font-size: 13.5px; color: #64748b; margin-bottom: 0.25rem;">Ready for Analysis</div>
+                    <div class="file-size-pill">File Size : 0.03 MB</div>
+                </div>
+
+                <button class="btn-purple-primary" onclick="switchScreen('step3-upload')">
+                    Submit for Prediction
+                </button>
+
+                <div class="warning-card-container">
+                    <div class="warning-header">
+                        <span>⚠️</span> Warning
+                    </div>
+                    <div class="warning-title">Need for Further Investigation</div>
+                    <p class="warning-desc">Please upload an image with better visual properties for accurate analysis.</p>
+                </div>
+            </div>
+
+            <!-- ═══════════════ SCREEN 6: STEP 3 - RESULT (INFECTED + VET) (IMAGE 3) ═══════════════ -->
+            <div id="screen-step3-diseased" class="screen-view">
+                <button class="btn-purple-primary" onclick="switchScreen('step3-upload')">
+                    Submit for Prediction
+                </button>
+
+                <div class="two-column-results">
+                    <!-- Left: Prediction Result -->
+                    <div class="lavender-card-container" style="margin-top:0;">
+                        <h2 class="lavender-card-title red">Prediction Result</h2>
+                        <div class="white-inner-box">
+                            <div class="status-text red">Status: LSD Infected</div>
+                            <div class="confidence-text">Confidence: 93.01%</div>
+                        </div>
+                        <div class="analysis-type-pill">
+                            <div style="font-size:12px;color:#64748b;margin-bottom:2px;">Analysis Type</div>
+                            <div>LSD - Lumpy Skin Disease</div>
+                        </div>
+                    </div>
+
+                    <!-- Right: Recommended Veterinary Support -->
+                    <div class="vet-support-card">
+                        <h3>Recommended veterinary support</h3>
+                        
+                        <div class="vet-person-block">
+                            <div class="vet-person-name">Dr.K.Kumaraswamy</div>
+                            <div class="vet-person-details">Veterinary Doctor | Chinnakalvala |</div>
+                            <div class="vet-person-details" style="font-weight:600;margin-top:2px;">9573888587</div>
+                        </div>
+
+                        <div class="vet-person-block" style="margin-bottom:0;">
+                            <div class="vet-person-name">A Mohan Reddy</div>
+                            <div class="vet-person-details">Gopalamitra | dharmaram | 9441037493</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <script>
+        let currentFontSize = 20;
+
+        function adjustFont(delta) {
+            currentFontSize = Math.max(14, Math.min(28, currentFontSize + delta));
+            document.getElementById('fontSizeDisplay').innerText = currentFontSize;
+            document.getElementById('mainScalableContent').style.fontSize = currentFontSize + 'px';
+        }
+
+        const screensData = {
+            'step1': {
+                userProgress: [
+                    { label: 'Step 1: User Info', icon: 'active' },
+                    { label: 'Step 2: OTP Verification', icon: 'pending' },
+                    { label: 'Step 3: Dashboard', icon: 'pending' }
+                ],
+                showDashboardWorkflow: false
+            },
+            'step2': {
+                userProgress: [
+                    { label: 'Step 1: User Info', icon: 'check' },
+                    { label: 'Step 2: OTP Verification', icon: 'active' },
+                    { label: 'Step 3: Dashboard', icon: 'pending' }
+                ],
+                showDashboardWorkflow: false
+            },
+            'step3-upload': {
+                userProgress: [
+                    { label: 'Step 1: User Info', icon: 'check' },
+                    { label: 'Step 2: OTP Verification', icon: 'check' },
+                    { label: 'Step 3: Dashboard', icon: 'active' }
+                ],
+                showDashboardWorkflow: true,
+                workflowItems: [
+                    { label: 'Disease Type Selected', icon: 'check' },
+                    { label: 'Image Uploaded', icon: 'check' },
+                    { label: 'Prediction Pending', icon: 'warning' },
+                    { label: 'Prediction Completed', icon: 'pending' }
+                ]
+            },
+            'step3-healthy': {
+                userProgress: [
+                    { label: 'Step 1: User Info', icon: 'check' },
+                    { label: 'Step 2: OTP Verification', icon: 'check' },
+                    { label: 'Step 3: Dashboard', icon: 'active' }
+                ],
+                showDashboardWorkflow: true,
+                workflowItems: [
+                    { label: 'Disease Type Selected', icon: 'check' },
+                    { label: 'Image Uploaded', icon: 'check' },
+                    { label: 'Prediction Pending', icon: 'warning' },
+                    { label: 'Prediction Completed', icon: 'check' }
+                ]
+            },
+            'step3-warning': {
+                userProgress: [
+                    { label: 'Step 1: User Info', icon: 'check' },
+                    { label: 'Step 2: OTP Verification', icon: 'check' },
+                    { label: 'Step 3: Dashboard', icon: 'active' }
+                ],
+                showDashboardWorkflow: true,
+                workflowItems: [
+                    { label: 'Disease Type Selected', icon: 'check' },
+                    { label: 'Image Uploaded', icon: 'check' },
+                    { label: 'Prediction Pending', icon: 'warning' },
+                    { label: 'Prediction Completed', icon: 'check' }
+                ]
+            },
+            'step3-diseased': {
+                userProgress: [
+                    { label: 'Step 1: User Info', icon: 'check' },
+                    { label: 'Step 2: OTP Verification', icon: 'check' },
+                    { label: 'Step 3: Dashboard', icon: 'active' }
+                ],
+                showDashboardWorkflow: true,
+                workflowItems: [
+                    { label: 'Disease Type Selected', icon: 'check' },
+                    { label: 'Image Uploaded', icon: 'check' },
+                    { label: 'Prediction Pending', icon: 'warning' },
+                    { label: 'Prediction Completed', icon: 'check' }
+                ]
+            }
+        };
+
+        function switchScreen(screenKey) {
+            // Update Tab buttons
+            document.querySelectorAll('.screen-tab-btn').forEach(btn => btn.classList.remove('active'));
+            const matchingBtn = Array.from(document.querySelectorAll('.screen-tab-btn')).find(b => b.getAttribute('onclick').includes(screenKey));
+            if (matchingBtn) matchingBtn.classList.add('active');
+
+            // Hide all screens, show target
+            document.querySelectorAll('.screen-view').forEach(s => s.classList.remove('active'));
+            const targetScreen = document.getElementById('screen-' + screenKey);
+            if (targetScreen) targetScreen.classList.add('active');
+
+            // Update Sidebar Progress
+            const screenInfo = screensData[screenKey];
+            const progressList = document.getElementById('userProgressList');
+            progressList.innerHTML = '';
+            screenInfo.userProgress.forEach(item => {
+                const li = document.createElement('li');
+                li.className = 'progress-item';
+                let iconHtml = '';
+                if (item.icon === 'check') {
+                    iconHtml = '<div class="check-box-icon">✓</div>';
+                } else if (item.icon === 'active') {
+                    iconHtml = '<div class="radio-active-icon"></div>';
+                } else {
+                    iconHtml = '<div class="circle-pending-icon"></div>';
+                }
+                li.innerHTML = `${iconHtml} <span>${item.label}</span>`;
+                progressList.appendChild(li);
+            });
+
+            // Update Dashboard Workflow
+            const workflowSection = document.getElementById('dashboardWorkflowSection');
+            const workflowList = document.getElementById('dashboardWorkflowList');
+            if (screenInfo.showDashboardWorkflow) {
+                workflowSection.style.display = 'block';
+                workflowList.innerHTML = '';
+                screenInfo.workflowItems.forEach(item => {
+                    const li = document.createElement('li');
+                    li.className = 'progress-item';
+                    let iconHtml = '';
+                    if (item.icon === 'check') {
+                        iconHtml = '<div class="check-box-icon">✓</div>';
+                    } else if (item.icon === 'warning') {
+                        iconHtml = '<div class="dot-warning-icon"></div>';
+                    } else {
+                        iconHtml = '<div class="circle-pending-icon"></div>';
+                    }
+                    li.innerHTML = `${iconHtml} <span>${item.label}</span>`;
+                    workflowList.appendChild(li);
+                });
+            } else {
+                workflowSection.style.display = 'none';
+            }
+        }
+
+        // Initialize with Step 1
+        switchScreen('step1');
+    </script>
+</body>
+</html>
